@@ -9,7 +9,13 @@ export function openDatabase(databasePath: string): SqliteDatabase {
   const database = new Database(databasePath);
   database.pragma('foreign_keys = ON');
   database.pragma('journal_mode = WAL');
-  const migration = readFileSync(new URL('../migrations/001_init.sql', import.meta.url), 'utf8');
-  database.exec(migration);
+  database.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)');
+  database.transaction(() => {
+    for (const name of ['001_init.sql', '002_security_limits.sql']) {
+      if (database.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(name)) continue;
+      database.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
+      database.prepare('INSERT INTO schema_migrations(name) VALUES (?)').run(name);
+    }
+  })();
   return database;
 }

@@ -111,28 +111,91 @@ build in Compose. Tags can be republished by rerunning CI; use an image digest
 | `DATABASE_PATH` | `/data/cloudsync.sqlite` in Docker; `./data/cloudsync.sqlite` locally | SQLite database file. Keep it on persistent storage. |
 | `PORT` | `3000` | HTTP listener port; update port mappings if overriding it. |
 | `CLOUDSYNC_TAG` | `latest` | Compose image selection only; not a server setting. |
+| `REGISTRATION_ENABLED` | `true` | Set to `false` to refuse new registrations; existing accounts can still sign in. Accepts only `true` or `false`. |
+| `TRUSTED_PROXIES` | Empty | Comma-separated proxy IPs/CIDRs whose forwarding headers may be trusted. Empty ignores forwarding headers. |
+| `AUTH_WINDOW_SECONDS` | `900` | Authentication rate-limit window. |
+| `AUTH_IP_LIMIT` | `100` | Requests to authentication routes per client IP per window. |
+| `AUTH_ACCOUNT_LIMIT` | `10` | Combined registration/login attempts per normalized account per window, across client IPs. |
+| `PASSWORD_HASH_CONCURRENCY` | `2` | Concurrent Argon2 operations; excess requests receive `429` without being queued. Each operation uses 64 MiB. |
+| `USER_REQUESTS_PER_MINUTE` | `60` | Snapshot reads, writes, and deletions per authenticated account per minute. |
+| `MAX_USERS` | `100` | Maximum registered accounts. At capacity, signup still returns the uniform acknowledgement. |
+| `MAX_USER_STORAGE_BYTES` | `52428800` (50 MiB) | Retained ciphertext JSON bytes per account. Old snapshots are pruned to fit. |
+| `MAX_SNAPSHOT_STORAGE_BYTES` | `536870912` (512 MiB) | Total retained ciphertext JSON bytes across accounts. |
+| `MAX_DATABASE_BYTES` | `805306368` (768 MiB) | SQLite main database page limit, including indexes and metadata. |
+| `MAX_UPLOAD_RECEIPTS_PER_USER` | `10000` | Retained upload receipts per account. |
+| `MAX_DEVICES_PER_USER` | `32` | Persistent device watermarks per account, including legacy devices without sequences. |
+| `MAX_REFRESH_TOKENS_PER_USER` | `10000` | Unexpired refresh records per account, including revoked replay tombstones. |
+| `MAX_AUDIT_EVENTS` | `10000` | Maximum retained audit events across the service. |
+| `AUDIT_RETENTION_SECONDS` | `2592000` (30 days) | Maximum audit event age. |
+| `MAX_UPLOAD_AGE_SECONDS` | `2592000` (30 days) | Maximum age of an unseen upload; receipts live through this window plus five minutes of allowed clock skew. |
 
 The server listens on `0.0.0.0` inside the container. The image includes a
 health check against `/v1/health`, and graceful shutdown closes SQLite. Logs go
 to stdout/stderr; inspect them with `docker compose logs --tail=100 cloudsync`.
 Health reports HTTP availability; it is not a database integrity check.
 
-The following limits are currently fixed in the server configuration:
+Set `REGISTRATION_ENABLED=false` in `.env` and recreate the Compose container
+after provisioning your accounts. In Kubernetes, change the corresponding
+container environment variable to `"false"`. Registration then returns `403`
+with `registration_disabled`, without changing existing accounts.
+
+Behind a reverse proxy, configure `TRUSTED_PROXIES` with that proxy's actual IPs
+or CIDRs and have it overwrite forwarding headers. Without this setting, all
+clients behind that proxy share its IP budget. Do not trust arbitrary internet
+clients as proxies. Rate limits are per server process and return `429` with
+`Retry-After`; limiter maps are capped at 10,000 keys and refuse new keys when full
+until entries expire. SQLite deployments must remain at one server instance.
+
+The service also applies these fixed protocol limits:
 
 - Access tokens expire after 15 minutes; refresh tokens expire after 30 days.
 - Refresh tokens rotate on use. Reusing an old token revokes its token family.
-- The JSON request limit is 10 MiB, including encoded envelope metadata.
+- Authentication JSON is limited to 4 KiB. Snapshot JSON is limited to 10 MiB,
+  including encoded metadata. Compressed request bodies are rejected with `415`.
 - The last 10 snapshot revisions per account are retained. Clients retrieve
   only the latest snapshot; there is no history API.
-- Account registration is open, passwords must contain at least 12 characters,
-  and the server has no built-in rate limiting. Apply access restrictions and
-  rate limits at the reverse proxy as appropriate for your deployment.
+- Passwords must contain at least 12 characters. Registration and login share
+  account and IP throttles; missing accounts still perform an Argon2 verification.
+- New and existing registration addresses receive the same `202`
+  `{"status":"registration_received"}` acknowledgement, without tokens.
+  Clients must sign in afterward. An existing account's password is never changed
+  by registration. Upgrade Android clients alongside this protocol change.
+
+Unrestricted signup followed by immediate login still permits active
+signup-and-login probing of addresses; complete protection against that requires
+an ownership-verification or invitation workflow. Disable registration for
+private deployments. Uniform acknowledgements and equal-cost password checking
+prevent direct registration-response and failed-login timing disclosure.
+
+Expired refresh tokens are removed, while unexpired revoked tokens remain so
+reuse can revoke the whole family. Audit events are trimmed by age and count.
+Housekeeping runs on startup and at most once per minute during writes.
+Quota exhaustion returns `507`; an individual backup larger than its account's
+byte quota returns `413`, and a new device beyond the device limit returns `409`.
+Rejected writes do not partially prune or replace existing backups.
+
+Device sequence watermarks and account revision counters survive deletion and
+receipt expiry. Receipts expire only after the matching envelope is too old to
+accept again; a persisted timestamp floor also prevents replays if the configured
+upload window later increases. Do not manually delete these replay records.
+An unseen backup over the upload age limit returns `409 upload_expired`; create a
+fresh backup from current client data rather than retrying the expired envelope.
+Device clocks may be up to five minutes ahead of the server. Once a device sends
+a sequence, subsequent new uploads from that device must continue sending one.
+
+Byte quotas measure retained JSON, not filesystem usage. The SQLite page limit
+bounds the main file; WAL/SHM files and operator-created backups need additional
+disk space. Existing data is preserved on upgrade; a database larger than
+`MAX_DATABASE_BYTES` requires increasing that limit before startup. Keep a
+filesystem or volume quota as an additional bound on deployment disk use.
 
 ### Updates and backups
 
 Set the desired `CLOUDSYNC_TAG`, then run `docker compose pull` and
 `docker compose up -d`. Back up before upgrading. To roll back, restore the
 previous image tag and, if a database migration requires it, the matching backup.
+Security limits add a versioned database migration; restore the matching database
+backup when rolling back across that migration.
 
 Back up the entire `cloudsync-data` volume, which contains accounts, password
 hashes, hashed refresh tokens, encrypted snapshots, and audit events. Compose
@@ -155,7 +218,7 @@ All request and response bodies use JSON. Snapshot routes require
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/health` | Unauthenticated health check. |
-| `POST` | `/v1/auth/register` | Register with `email` and `password`; returns access and refresh tokens. |
+| `POST` | `/v1/auth/register` | Request registration with `email` and `password`; returns a uniform `202` acknowledgement. Sign in separately for tokens. |
 | `POST` | `/v1/auth/login` | Authenticate with `email` and `password`. |
 | `POST` | `/v1/auth/refresh` | Exchange `refreshToken` for a rotated token pair. |
 | `POST` | `/v1/auth/logout` | Revoke the family associated with `refreshToken`. |
@@ -174,9 +237,11 @@ Current Android clients send a persisted, increasing `X-CloudSync-Sequence`
 header for each device. A request older than the last accepted sequence for that
 account and device returns `409` (`stale_upload`). Upgrade the server with the
 client to protect against delayed requests arriving after newer backups. Older
-clients without the header retain upload-order behavior. Small upload receipts
-(ciphertext hashes and revisions) and sequence counters survive ciphertext
-retention and deletion, so retries cannot restore deleted or superseded data.
+clients that have never sent a sequence retain upload-order behavior, subject to
+the upload age limit. Small upload receipts (ciphertext hashes and revisions)
+survive ciphertext retention and deletion until their safe expiry time. Device
+watermarks, timestamp floors, and revision counters persist beyond receipt expiry,
+so retries cannot restore deleted or superseded data.
 
 ## Local development
 

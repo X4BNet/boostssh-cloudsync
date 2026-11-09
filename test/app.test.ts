@@ -13,8 +13,10 @@ let app: ReturnType<typeof createApp>;
 
 async function register(email = 'user@example.com') {
   const response = await request(app).post('/v1/auth/register').send({ email, password: 'long-test-password' });
-  expect(response.status).toBe(201);
-  return response.body as { accessToken: string; refreshToken: string };
+  expect(response.status).toBe(202);
+  const login = await request(app).post('/v1/auth/login').send({ email, password: 'long-test-password' });
+  expect(login.status).toBe(200);
+  return login.body as { accessToken: string; refreshToken: string };
 }
 
 function envelope(backupId: string) {
@@ -23,7 +25,7 @@ function envelope(backupId: string) {
     schemaVersion: 1,
     backupId,
     deviceId: 'device-1',
-    createdAt: '2026-09-07T00:00:00.000Z',
+    createdAt: new Date().toISOString(),
     kdf: { name: 'argon2id', salt: 'YWJjZA==', memoryKiB: 65536, iterations: 3, parallelism: 1 },
     cipher: { name: 'AES-256-GCM', nonce: 'YWJjZA==', ciphertext: 'ZW5jcnlwdGVk' }
   };
@@ -193,8 +195,10 @@ describe('CloudSync', () => {
   it('enforces request quotas before parsing envelope content', async () => {
     const limited = createApp(database, { ...config, maxBackupBytes: 2048 });
     const user = await request(limited).post('/v1/auth/register').send({ email: 'quota@example.com', password: 'long-test-password' });
+    expect(user.status).toBe(202);
+    const login = await request(limited).post('/v1/auth/login').send({ email: 'quota@example.com', password: 'long-test-password' });
     const oversized = { ...envelope('00000000-0000-4000-8000-000000000001'), padding: 'x'.repeat(4096) };
-    expect((await request(limited).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${user.body.accessToken}`).send(oversized)).status).toBe(413);
+    expect((await request(limited).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${login.body.accessToken}`).send(oversized)).status).toBe(413);
     const count = database.prepare('SELECT COUNT(*) AS count FROM snapshots').get() as { count: number };
     expect(count.count).toBe(0);
   });
@@ -217,18 +221,21 @@ describe('CloudSync', () => {
     try {
       let persistentApp = createApp(persistent, persistentConfig);
       const user = await request(persistentApp).post('/v1/auth/register').send({ email: 'restart@example.com', password: 'long-test-password' });
-      await request(persistentApp).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${user.body.accessToken}`).set('X-CloudSync-Sequence', '2').send(envelope('00000000-0000-4000-8000-000000000001'));
+      expect(user.status).toBe(202);
+      const login = await request(persistentApp).post('/v1/auth/login').send({ email: 'restart@example.com', password: 'long-test-password' });
+      const savedEnvelope = envelope('00000000-0000-4000-8000-000000000001');
+      await request(persistentApp).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${login.body.accessToken}`).set('X-CloudSync-Sequence', '2').send(savedEnvelope);
       persistent.close();
       persistent = openDatabase(path);
       persistentApp = createApp(persistent, persistentConfig);
-      const latest = await request(persistentApp).get('/v1/cloudsync/latest').set('Authorization', `Bearer ${user.body.accessToken}`);
+      const latest = await request(persistentApp).get('/v1/cloudsync/latest').set('Authorization', `Bearer ${login.body.accessToken}`);
       expect(latest.status).toBe(200);
       expect(latest.body.envelope.cipher.ciphertext).toBe('ZW5jcnlwdGVk');
-      const retry = await request(persistentApp).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${user.body.accessToken}`)
-        .set('X-CloudSync-Sequence', '2').send(envelope('00000000-0000-4000-8000-000000000001'));
+      const retry = await request(persistentApp).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${login.body.accessToken}`)
+        .set('X-CloudSync-Sequence', '2').send(savedEnvelope);
       expect(retry.status).toBe(200);
       expect(retry.body.revision).toBe(1);
-      const stale = await request(persistentApp).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${user.body.accessToken}`)
+      const stale = await request(persistentApp).put('/v1/cloudsync/latest').set('Authorization', `Bearer ${login.body.accessToken}`)
         .set('X-CloudSync-Sequence', '1').send(envelope('00000000-0000-4000-8000-000000000002'));
       expect(stale.status).toBe(409);
     } finally {

@@ -41,10 +41,12 @@ authenticate() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: "container@example.test", password: "container-test-password" })
     });
-    const expected = operation === "register" ? 201 : 200;
+    const expected = operation === "register" ? 202 : 200;
     if (response.status !== expected) throw new Error(`${operation}: HTTP ${response.status}`);
-    const tokens = await response.json();
-    if (!tokens.accessToken || !tokens.refreshToken) throw new Error("Missing authentication tokens");
+    const body = await response.json();
+    if (operation === "register") {
+      if (body.status !== "registration_received" || body.accessToken || body.refreshToken) throw new Error("Invalid registration acknowledgement");
+    } else if (!body.accessToken || !body.refreshToken) throw new Error("Missing authentication tokens");
   '
 }
 

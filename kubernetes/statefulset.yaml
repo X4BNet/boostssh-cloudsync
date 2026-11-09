@@ -88,6 +88,8 @@ spec:
               value: "3000"
             - name: DATABASE_PATH
               value: /data/cloudsync.sqlite
+            - name: REGISTRATION_ENABLED
+              value: "true"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
