@@ -1,0 +1,15 @@
+services:
+  cloudsync:
+    image: x4bnet/boostssh-cloudsync:${CLOUDSYNC_TAG:-latest}
+    environment:
+      DATABASE_PATH: /data/cloudsync.sqlite
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to at least 32 random characters}
+      PORT: 3000
+    volumes:
+      - cloudsync-data:/data
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+volumes:
+  cloudsync-data:
