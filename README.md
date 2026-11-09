@@ -279,8 +279,12 @@ SQLite volume. It publishes that tested image on pushes and manual runs in
 `ubuntu-latest` runners.
 
 Before the first publishing run, configure the `X4BNet/boostssh-cloudsync` GitHub Actions repository secret
-`DOCKERHUB_TOKEN` with a **splitice** Docker Hub personal access token that has
-Read & Write permissions for `x4bnet/boostssh-cloudsync`. The publishing account must have
+`DOCKERHUB_TOKEN` with a token belonging to **x4bnet** that has Read & Write
+permissions for `x4bnet/boostssh-cloudsync`. If the token belongs to a different
+publishing user, set the repository Actions variable `DOCKERHUB_USERNAME` to that
+user's Docker Hub login. It defaults to `x4bnet`; repository provisioning and
+registry login both use this same identity. For local helper runs, use the
+`DOCKERHUB_USERNAME` environment variable instead. The publishing account must have
 write access to the `x4bnet` namespace. Create `x4bnet/boostssh-cloudsync` as **Public** in
 Docker Hub before running CI; image push permissions do not necessarily allow
 repository creation through the Hub API. Add this README as its repository overview.

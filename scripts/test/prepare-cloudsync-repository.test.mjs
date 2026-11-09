@@ -17,7 +17,7 @@ test('creates the intended public repository with its README and verifies anonym
   const mock = mockRequest([[200, { access_token: 'bearer' }], [404], [201], [200, { is_private: false }]]);
   await prepareRepository({ token: 'secret', readme: '# CloudSync', request: mock.request });
   assert.equal(mock.calls[0].url, 'https://hub.docker.com/v2/auth/token');
-  assert.deepEqual(JSON.parse(mock.calls[0].body), { identifier: 'splitice', secret: 'secret' });
+  assert.deepEqual(JSON.parse(mock.calls[0].body), { identifier: 'x4bnet', secret: 'secret' });
   assert.equal(mock.calls[1].url, 'https://hub.docker.com/v2/namespaces/x4bnet/repositories/boostssh-cloudsync');
   assert.equal(mock.calls[2].url, 'https://hub.docker.com/v2/namespaces/x4bnet/repositories');
   assert.equal(mock.calls[2].method, 'POST');
@@ -35,6 +35,20 @@ test('existing public repository needs no write', async () => {
   const mock = mockRequest([[200, { access_token: 'bearer' }], [200, { is_private: false }], [200, { is_private: false }]]);
   await prepareRepository({ token: 'secret', readme: '', request: mock.request });
   assert.deepEqual(mock.calls.map(call => call.method), ['POST', 'GET', 'GET']);
+});
+
+test('a configured publishing identity does not change the target namespace', async () => {
+  const mock = mockRequest([[200, { access_token: 'bearer' }], [404], [201], [200, { is_private: false }]]);
+  await prepareRepository({ username: 'publisher', token: 'secret', readme: '', request: mock.request });
+  assert.deepEqual(JSON.parse(mock.calls[0].body), { identifier: 'publisher', secret: 'secret' });
+  assert.equal(JSON.parse(mock.calls[2].body).namespace, 'x4bnet');
+  assert.equal(JSON.parse(mock.calls[2].body).name, 'boostssh-cloudsync');
+});
+
+test('an empty publishing identity fails before making a request', async () => {
+  const mock = mockRequest([]);
+  await assert.rejects(prepareRepository({ username: '', token: 'secret', request: mock.request }), /Missing DOCKERHUB_USERNAME/);
+  assert.equal(mock.calls.length, 0);
 });
 
 test('a private repository blocks publication', async () => {

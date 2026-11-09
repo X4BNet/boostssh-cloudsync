@@ -6,8 +6,9 @@ const repositories = '/namespaces/x4bnet/repositories';
 const repository = `${repositories}/boostssh-cloudsync`;
 
 // Only this public image repository is managed here; GitHub visibility is separate.
-export async function prepareRepository({ token, readme, request = fetch }) {
+export async function prepareRepository({ username = 'x4bnet', token, readme, request = fetch }) {
   if (!token) throw new Error('Missing DOCKERHUB_TOKEN Actions secret for publishing to x4bnet/boostssh-cloudsync');
+  if (!username) throw new Error('Missing DOCKERHUB_USERNAME for Docker Hub authentication');
   const call = async (path, { method = 'GET', body, bearer } = {}) => {
     const response = await request(`${api}${path}`, {
       method,
@@ -27,7 +28,7 @@ export async function prepareRepository({ token, readme, request = fetch }) {
 
   const login = await call('/auth/token', {
     // Authenticate as the publishing user, independently of the target namespace.
-    method: 'POST', body: { identifier: 'splitice', secret: token }
+    method: 'POST', body: { identifier: username, secret: token }
   });
   check(login, 'authentication');
   const { access_token: bearer } = await login.json();
@@ -65,6 +66,7 @@ export async function prepareRepository({ token, readme, request = fetch }) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     await prepareRepository({
+      username: process.env.DOCKERHUB_USERNAME ?? 'x4bnet',
       token: process.env.DOCKERHUB_TOKEN,
       readme: await readFile(new URL('../README.md', import.meta.url), 'utf8')
     });
