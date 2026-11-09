@@ -29,6 +29,10 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Log into registry
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login -u x4bnet --password-stdin
       - name: Test Docker Hub repository provisioning
         run: node --test scripts/test/prepare-cloudsync-repository.test.mjs
       - uses: docker/setup-buildx-action@v4
